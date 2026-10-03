@@ -1,5 +1,7 @@
 # cropall
 
+VIBE-CODED FORK WITH A FEW ADDITIONAL FEATURES: USE AT YOUR OWN RISK.
+
 A small cross-platform python script to interactively crop and resize lots of
 images images quickly. Image editors like gimp take way too long to start, open
 an image, crop it, export it. A batch job/script can automate it but everything
