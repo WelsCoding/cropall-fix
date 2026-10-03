@@ -63,14 +63,23 @@ parser.add_argument(
 
 def getImages(config, dir):
     logger.info("Scanning {}".format(dir))
-    extensions = config["image_extensions"].split()
+    extensions = {
+        extension.lower()
+        for extension in (
+            config.get("image_extensions", "").split()
+            + config.get(
+                "video_extensions",
+                ".mp4 .mov .mkv .avi .webm .m4v .mpeg .mpg .wmv .3gp .ts .m2ts .flv .vob",
+            ).split()
+        )
+    }
     images = []
     for filename in os.listdir(dir):
-        basename, ext = os.path.splitext(filename)
+        _, ext = os.path.splitext(filename)
         if ext.lower() in extensions:
             logger.info("  Found {}".format(filename))
             images += [filename]
-    logger.info("Found {} images".format(len(images)))
+    logger.info("Found {} media files".format(len(images)))
     return images
 
 

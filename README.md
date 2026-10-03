@@ -8,12 +8,13 @@ loading/clicking crop/save/next so your amazing human vision can be used to
 quickly select what needs to be cropped and not wasted on navigating clunky GUI
 hierarchies.
 
-This is really a minimal GUI and preview for the following imagemagick command:
+For images this is a minimal GUI and preview for the following ImageMagick
+command:
 
     convert in.jpg -crop <region> -resize <fit> out.jpg
 
-This script actually uses imagemagick under the hood for its fast and high
-quality resampling algorithms. The GUI shows a quick and low quality preview.
+ImageMagick provides the high-quality image resampling; FFmpeg handles video
+frame previews and crop/resize output. The GUI uses quick, low-quality previews.
 
 ## Controls
 
@@ -26,15 +27,23 @@ Select the source directory to process. By default results are written to a
   shift to move the box-select)
 - scroll - adjust crop size when using scroll mode (hold shift for small
   adjustments)
+- Select **Lock ratio** and enter an aspect such as `1 : 1` to constrain the
+  selection; uncheck it for a free-form click-drag crop. Free-form cropping uses
+  click-drag mode automatically.
+- Enter a positive integer in **Divisible by** to make both crop dimensions a
+  multiple of that value. Leave it blank to disable the constraint.
+- Videos open on their first frame. **+10 frames** advances the preview by ten
+  frames; Crop applies the selected rectangle to the whole video.
 
 ![gui preview](doc/preview.jpg "GUI preview")
 
 Buttons:
 
-- Copy - copy the source image file to the output directory (no crop/resize)
-- Resize - shrink the image to the smaller of the given width or height, keeping aspect ratio
-- Crop - crop the image to match the region shown in the preview, also resizing
-  if the option is selected
+- Copy - copy the source media file to the output directory (no crop/resize)
+- Resize - shrink an image or video to the smaller of the given width or height,
+  keeping its aspect ratio
+- Crop - crop the image or every frame of the video to match the region shown
+  in the preview, also resizing if the option is selected
 
 ## Install
 
@@ -42,38 +51,45 @@ Download a pre-built from the
 [releases](https://github.com/pknowles/cropall/releases) section on github.
 These are self contained packages created with pyinstaller.
 
-Alternatively, grab the source and dependencies. I hope it's simple enough that
-people with a little python experience can adapt it as needed.
+For a Linux source install, Python 3.12, Tk, ImageMagick's Wand library, and
+FFmpeg are required. On Ubuntu/Debian, install the system packages first:
 
+```bash
+sudo apt-get install python3.12-venv python3-tk libmagickwand-dev ffmpeg
 ```
-git clone https://github.com/pknowles/cropall.git
-cd cropall
-python -m venv .venv
 
-# linux
+Then run the included helper script from the project directory:
+
+```bash
+./run_cropall.sh
+```
+
+The script creates `.venv`, installs `requirements.txt` on its first run,
+activates the environment, and starts `cropall.py`. If `.venv` already exists,
+it skips installation and starts the app using that environment. To pass an
+input directory, for example:
+
+```bash
+./run_cropall.sh /path/to/photos-and-videos
+```
+
+You can also set up and run the environment manually:
+
+```bash
+python3.12 -m venv .venv
 . .venv/bin/activate
-
-# windows
-. .venv/Scripts/Activate
-
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 python cropall.py
-
-# Install ImageMagick https://docs.wand-py.org/en/latest/guide/install.html
-# E.g.:
-
-# Ubuntu
-sudo apt-get install libmagickwand-dev
-
-# Fedora
-sudo dnf install ImageMagick-devel
-
-# Windows (make sure to match python x86 or x64)
-# Download dll from: https://imagemagick.org/script/download.php#windows
-
-# Optional: create the standalone binary distribution
-pyinstaller cropall.spec
 ```
+
+FFmpeg handles video previews and encoding; cropped videos are re-encoded
+(H.264/AAC for common MP4/MOV/MKV files). Install FFmpeg separately if it is
+not available through your Linux package manager. ImageMagick is used for
+high-quality image resampling; see the
+[Wand installation guide](https://docs.wand-py.org/en/latest/guide/install.html)
+for other distributions.
+
+Optional: create the standalone binary distribution with `pyinstaller cropall.spec`.
 
 Feel free to report issues and post ideas. Pull requests are most welcome, thank
 you! I can't promise I'll get to them immediately but I'm grateful for your time
