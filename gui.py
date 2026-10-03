@@ -30,12 +30,16 @@
 
 import os
 import logging
+from io import BytesIO
+
 import box
 import numpy as np
+from crop_geometry import normalize_crop_coords
+import video_support
 from tkinter import *
 from tkinter.ttk import *
 from ttkthemes import ThemedTk
-from tkinter.messagebox import showinfo
+from tkinter.messagebox import showerror, showinfo
 from PIL import ImageOps
 from PIL import ImageTk
 from PIL import Image
@@ -78,9 +82,11 @@ class App(ThemedTk):
             + "human vision can be used to quickly select what needs to be cropped and "
             + "not wasted on navigating clunky GUI hierarchies.\n\n"
             + "Controls:\n"
-            + "  <space>        - crop and advance to next image\n"
-            + "  <left>/<right> - previous/next image\n"
+            + "  <space>        - crop and advance to next media file\n"
+            + "  <left>/<right> - previous/next media file\n"
             + "  scroll mouse   - adjust crop size when using scroll mode\n"
+            + "  +10 frames     - preview a later video frame\n"
+            + "  Lock ratio     - constrain the selection to the chosen ratio\n"
         )
 
         self.grid_rowconfigure(0, weight=1)
@@ -90,6 +96,9 @@ class App(ThemedTk):
         self.image = None
         self.delayed_resize_id = None
         self.preview = None
+        self.current_is_video = False
+        self.video_frame_number = 0
+        self.video_frame_available = True
 
         self.displayed_crop_rectangle = None
         self.verti_aux_item = None
@@ -105,63 +114,106 @@ class App(ThemedTk):
 
         self.shift_pressed = False
 
+        self.selection_mode = StringVar()
+        self.selection_mode.set(
+            self.configfile.get("selection", "mode", fallback="scroll")
+        )
+        self.aspect_vars = (StringVar(), StringVar())
+        self.aspect_vars[0].set(self.configfile.getint("selection", "aspect_width"))
+        self.aspect_vars[1].set(self.configfile.getint("selection", "aspect_height"))
+        self.resize_vars = (StringVar(), StringVar())
+        self.resize_vars[0].set(self.configfile.getint("cropper", "resize_width"))
+        self.resize_vars[1].set(self.configfile.getint("cropper", "resize_height"))
+        self.divisible_by_var = StringVar()
+        self.divisible_by_var.set(
+            self.configfile.get("selection", "divisible_by", fallback="")
+        )
+        self.fixed_aspect = IntVar()
+        self.fixed_aspect.set(
+            1 if self.configfile.getboolean("selection", "fixed_aspect") else 0
+        )
+
         self.controls = Frame(self)
         self.controls.grid(row=1, column=0, columnspan=2, sticky="nsew")
-
-        col = iter(range(14))
+        self.controls.columnconfigure(12, weight=1)
 
         selection_mode_options = ("click-drag", "scroll")
-        self.selection_mode = StringVar()
-        self.selection_mode.set(self.configfile["selection"]["mode"])
+        Label(self.controls, text="Selection").grid(
+            row=0, column=0, sticky="w", padx=(4, 2), pady=2
+        )
         self.selection_mode_dropdown = OptionMenu(
             self.controls,
             self.selection_mode,
-            self.configfile["selection"]["mode"],
+            self.selection_mode.get(),
             *selection_mode_options,
         )
-        self.selection_mode_dropdown.grid(row=0, column=next(col), sticky="nsew")
+        self.selection_mode_dropdown.grid(row=0, column=1, sticky="w", padx=2, pady=2)
 
-        self.inputs = []
-        self.input_labels = []
+        self.fixed_aspect_check = Checkbutton(
+            self.controls, text="Lock ratio", variable=self.fixed_aspect
+        )
+        self.fixed_aspect_check.grid(row=0, column=2, sticky="w", padx=(8, 2), pady=2)
+        Label(self.controls, text="Aspect").grid(
+            row=0, column=3, sticky="w", padx=(4, 2), pady=2
+        )
+        Entry(self.controls, textvariable=self.aspect_vars[0], width=4).grid(
+            row=0, column=4, sticky="w", padx=1, pady=2
+        )
+        Label(self.controls, text=":").grid(row=0, column=5, sticky="w", padx=1, pady=2)
+        Entry(self.controls, textvariable=self.aspect_vars[1], width=4).grid(
+            row=0, column=6, sticky="w", padx=1, pady=2
+        )
 
-        self.aspect_vars = (StringVar(), StringVar())
-        self.aspect_vars[0].set(3)
-        self.aspect_vars[1].set(2)
-        self.input_labels += [Label(self.controls, text="Aspect")]
-        self.input_labels[-1].grid(row=0, column=next(col), sticky="nsew")
-        self.inputs += [Entry(self.controls, textvariable=self.aspect_vars[0], width=4)]
-        self.inputs[-1].grid(row=0, column=next(col), sticky="nsew")
-        self.inputs += [Entry(self.controls, textvariable=self.aspect_vars[1], width=4)]
-        self.inputs[-1].grid(row=0, column=next(col), sticky="nsew")
+        Label(self.controls, text="Divisible by").grid(
+            row=0, column=7, sticky="w", padx=(10, 2), pady=2
+        )
+        validate_divisor = (self.register(self.validate_divisor_input), "%P")
+        self.divisible_by_entry = Entry(
+            self.controls,
+            textvariable=self.divisible_by_var,
+            width=5,
+            validate="key",
+            validatecommand=validate_divisor,
+        )
+        self.divisible_by_entry.grid(row=0, column=8, sticky="w", padx=1, pady=2)
+        self.divisible_status = Label(self.controls, text="", foreground="firebrick")
+        self.divisible_status.grid(row=0, column=9, sticky="w", padx=(2, 8), pady=2)
 
-        self.resize_vars = (StringVar(), StringVar())
-        self.resize_vars[0].set(3)
-        self.resize_vars[1].set(2)
-        self.input_labels += [Label(self.controls, text="Resize")]
-        self.input_labels[-1].grid(row=0, column=next(col), sticky="nsew")
-        self.inputs += [Entry(self.controls, textvariable=self.resize_vars[0], width=6)]
-        self.inputs[-1].grid(row=0, column=next(col), sticky="nsew")
-        self.inputs += [Entry(self.controls, textvariable=self.resize_vars[1], width=6)]
-        self.inputs[-1].grid(row=0, column=next(col), sticky="nsew")
+        self.video_frame_button = Button(
+            self.controls, text="+10 frames", command=self.advance_video_frame
+        )
+        self.video_frame_button.grid(row=0, column=10, sticky="w", padx=(8, 2), pady=2)
+        self.video_frame_status = Label(self.controls, text="")
+        self.video_frame_status.grid(row=0, column=11, sticky="w", padx=2, pady=2)
 
-        self.buttons = []
-        self.buttons += [Button(self.controls, text="Prev", command=self.previous)]
-        self.buttons[-1].grid(row=0, column=next(col), sticky="nsew")
-        self.buttons += [Button(self.controls, text="Next", command=self.next)]
-        self.buttons[-1].grid(row=0, column=next(col), sticky="nsew")
-        self.buttons += [Button(self.controls, text="Copy", command=self.copy_next)]
-        self.buttons[-1].grid(row=0, column=next(col), sticky="nsew")
-        self.buttons += [Button(self.controls, text="Resize", command=self.resize_next)]
-        self.buttons[-1].grid(row=0, column=next(col), sticky="nsew")
-        self.buttons += [Button(self.controls, text="Crop", command=self.crop_next)]
-        self.buttons[-1].grid(row=0, column=next(col), sticky="nsew")
+        Label(self.controls, text="Resize limit").grid(
+            row=1, column=0, sticky="w", padx=(4, 2), pady=2
+        )
+        Entry(self.controls, textvariable=self.resize_vars[0], width=7).grid(
+            row=1, column=1, sticky="w", padx=2, pady=2
+        )
+        Label(self.controls, text="×").grid(
+            row=1, column=2, sticky="w", padx=1, pady=2
+        )
+        Entry(self.controls, textvariable=self.resize_vars[1], width=7).grid(
+            row=1, column=3, sticky="w", padx=2, pady=2
+        )
+
+        self.previous_button = Button(self.controls, text="Prev", command=self.previous)
+        self.previous_button.grid(row=1, column=5, sticky="nsew", padx=2, pady=2)
+        self.next_button = Button(self.controls, text="Next", command=self.next)
+        self.next_button.grid(row=1, column=6, sticky="nsew", padx=2, pady=2)
+        self.copy_button = Button(self.controls, text="Copy", command=self.copy_next)
+        self.copy_button.grid(row=1, column=7, sticky="nsew", padx=2, pady=2)
+        self.resize_button = Button(
+            self.controls, text="Resize", command=self.resize_next
+        )
+        self.resize_button.grid(row=1, column=8, sticky="nsew", padx=2, pady=2)
+        self.crop_button = Button(self.controls, text="Crop", command=self.crop_next)
+        self.crop_button.grid(row=1, column=9, sticky="nsew", padx=2, pady=2)
 
         self.menubar = Menu(self)
         self.options_menu = Menu(self.menubar)
-        self.fixed_aspect = IntVar()
-        self.options_menu.add_checkbutton(
-            label="Fix Aspect Ratio", variable=self.fixed_aspect
-        )
         self.perfect_pixel_ratio = IntVar()
         self.options_menu.add_checkbutton(
             label="Perfect Pixel Ratio", variable=self.perfect_pixel_ratio
@@ -193,15 +245,8 @@ class App(ThemedTk):
         self.preview_label = Label(self, relief=FLAT, borderwidth=0)
         self.preview_label.grid(row=0, column=1, sticky="nw", padx=0, pady=0)
 
-        self.aspect_vars[0].set(self.configfile.getint("selection", "aspect_width"))
-        self.aspect_vars[1].set(self.configfile.getint("selection", "aspect_height"))
-        self.resize_vars[0].set(self.configfile.getint("cropper", "resize_width"))
-        self.resize_vars[1].set(self.configfile.getint("cropper", "resize_height"))
         self.perfect_pixel_ratio.set(
             1 if self.configfile.getboolean("selection", "perfect_pixel_ratio") else 0
-        )
-        self.fixed_aspect.set(
-            1 if self.configfile.getboolean("selection", "fixed_aspect") else 0
         )
         self.show_guides.set(
             1 if self.configfile.getboolean("selection", "show_guides") else 0
@@ -217,12 +262,15 @@ class App(ThemedTk):
         self.aspect_vars[1].trace("w", self.on_option_changed)
         self.resize_vars[0].trace("w", self.on_option_changed)
         self.resize_vars[1].trace("w", self.on_option_changed)
+        self.divisible_by_var.trace("w", self.on_option_changed)
         self.perfect_pixel_ratio.trace("w", self.on_option_changed)
-        self.fixed_aspect.trace("w", self.on_option_changed)
+        self.fixed_aspect.trace("w", self.on_fixed_aspect_changed)
         self.show_guides.trace("w", self.on_option_changed)
         self.resize_after_crop.trace("w", self.on_option_changed)
         self.confirm_overwrite.trace("w", self.on_option_changed)
-        self.selection_mode.trace("w", self.on_option_changed)
+        self.selection_mode.trace("w", self.on_selection_mode_changed)
+        if not self.fixed_aspect.get() and self.selection_mode.get() == "scroll":
+            self.selection_mode.set("click-drag")
         self.bind("<Configure>", self.on_resize)
         self.bind("<space>", self.crop_next)
         self.bind("<Right>", self.next)
@@ -257,14 +305,40 @@ class App(ThemedTk):
         self.current += 1
         self.previous()
 
+    def validate_divisor_input(self, value):
+        return value == "" or value.isdigit()
+
+    def divisible_by(self):
+        value = self.divisible_by_var.get().strip()
+        if not value:
+            return 1
+        try:
+            divisor = int(value)
+        except ValueError:
+            raise ValueError("Divisible by must be a positive integer") from None
+        if divisor < 1:
+            raise ValueError("Divisible by must be a positive integer")
+        return divisor
+
     def aspect(self):
         try:
             return box.Size2D(
                 max(1, int(self.aspect_vars[0].get())),
                 max(1, int(self.aspect_vars[1].get())),
             )
-        except ValueError:
+        except (TypeError, ValueError):
             return box.Size2D(1, 1)
+
+    def on_fixed_aspect_changed(self, event, var1, var2):
+        if not self.fixed_aspect.get() and self.selection_mode.get() == "scroll":
+            self.selection_mode.set("click-drag")
+        self.on_option_changed(event, var1, var2)
+
+    def on_selection_mode_changed(self, event, var1, var2):
+        if not self.fixed_aspect.get() and self.selection_mode.get() == "scroll":
+            self.selection_mode.set("click-drag")
+            return
+        self.on_option_changed(event, var1, var2)
 
     def scroll_crop_size(self):
         aspect = self.aspect()
@@ -273,33 +347,68 @@ class App(ThemedTk):
             (self.scroll_crop_width * aspect[1]) / aspect[0],
         )
 
-    def image_crop_box(self):
-        "Returns the crop box for the original image"
+    def image_crop_box(self, strict=False):
+        """Return the final crop box in source-image pixel coordinates."""
         image_box = box.Box2D.scale_down(self.image_size, self.image_area)
 
         if self.selection_mode.get() == "click-drag":
             image_mouse_box = (self.mouse_selection - image_box).scaled(
                 image_box.size, self.image_size
             )
-            if self.fixed_aspect.get() == 1:
-                region = box.Box2D.cover(self.aspect(), image_mouse_box.size, False)
-                region.offset += image_mouse_box.offset
-                box.Box2D
-                return region.positive_size()
-            else:
-                return image_mouse_box.positive_size()
+            requested_box = image_mouse_box.positive_size()
         else:
-            # scroll to change size
+            # Scroll mode is only available with a locked aspect ratio.
             region = box.Box2D(
                 ((self.mouse_position - image_box.offset) * self.image_size)
                 / image_box.size,
                 self.scroll_crop_size(),
             )
             region.offset -= (region.size / 2).astype(int)
-            return region.clamped(self.image_size)
+            requested_box = region.clamped(self.image_size)
+
+        aspect = (
+            tuple(int(value) for value in self.aspect())
+            if self.fixed_aspect.get()
+            else None
+        )
+        alignment = 2 if self.current_is_video else 1
+        requested_coords = requested_box.coords().tolist()
+        try:
+            coords = normalize_crop_coords(
+                requested_coords,
+                self.image_size,
+                divisor=self.divisible_by(),
+                aspect=aspect,
+                alignment=alignment,
+            )
+            self.divisible_status.configure(text="")
+        except ValueError as error:
+            self.divisible_status.configure(
+                text=(
+                    "Enter a positive integer"
+                    if "positive integer" in str(error)
+                    else "Too large for this media"
+                )
+            )
+            if strict:
+                raise
+            # Keep the preview drawable while an invalid constraint is being
+            # edited. Cropping itself still requires a valid constraint.
+            coords = normalize_crop_coords(
+                requested_coords,
+                self.image_size,
+                divisor=1,
+                aspect=aspect,
+                alignment=alignment,
+            )
+
+        return box.Box2D.from_min_max(
+            box.Size2D(coords[0], coords[1]),
+            box.Size2D(coords[2], coords[3]),
+        )
 
     def displayed_crop_box(self):
-        "Returns the crop box for the possibly-scaled displayed image, relative to the image_box area, not the whole image_area"
+        "Return a crop box in display coordinates, relative to the image area."
         image_box = box.Box2D.scale_down(self.image_size, self.image_area)
         orig_crop = self.image_crop_box()
         display_crop = orig_crop.scaled(self.image_size, image_box.size)
@@ -328,30 +437,102 @@ class App(ThemedTk):
             self.next()
 
     def crop_next(self, event=None):
-        box = self.image_crop_box()
+        if not self.video_frame_available:
+            showerror("Video preview unavailable", "This video could not be previewed.")
+            return
+        try:
+            crop_box = self.image_crop_box(strict=True)
+        except ValueError as error:
+            showerror("Invalid crop settings", str(error))
+            return
         if self.cropper.crop(
             self.input_folder / self.currentName,
             self.output_folder / self.currentName,
-            box.coords().tolist(),
+            crop_box.coords().tolist(),
+            source_size=tuple(int(value) for value in self.image_size),
         ):
             self.next()
+
+    def advance_video_frame(self):
+        if not self.current_is_video or not self.video_frame_available:
+            return
+        next_frame = self.video_frame_number + 10
+        try:
+            frame = video_support.extract_frame(
+                self.input_folder / self.currentName, next_frame
+            )
+        except video_support.VideoFrameUnavailable:
+            self.video_frame_status.configure(text="End of video")
+            self.video_frame_button.configure(state=DISABLED)
+            return
+        except video_support.VideoError as error:
+            showerror("Video preview failed", str(error))
+            return
+
+        old_size = tuple(int(value) for value in self.image_size)
+        self.image_orig = Image.open(BytesIO(frame)).convert("RGB")
+        self.image_size = box.Size2D(*self.image_orig.size)
+        self.video_frame_number = next_frame
+        self.video_frame_status.configure(text=f"Frame {next_frame + 1}")
+        if tuple(int(value) for value in self.image_size) != old_size:
+            image_box = box.Box2D.scale_down(self.image_size, self.image_area)
+            self.mouse_position = (self.image_area / 2).astype(int)
+            self.mouse_selection = box.Box2D(
+                image_box.offset + image_box.size / 4,
+                image_box.size / 2,
+            )
+        self.update_image_display()
+        self.update_selection_box(self.image_label)
+        self.update_preview(self.image_label)
 
     def load_imgfile(self, filename):
         self.currentName = filename
         fullFilename = os.path.join(self.input_folder, filename)
         logger.info("Loading " + fullFilename)
-        self.image_orig = Image.open(fullFilename)
+        self.current_is_video = self.cropper.is_video_file(filename)
+        self.video_frame_number = 0
+        self.video_frame_available = True
+
+        if self.current_is_video:
+            self.video_frame_button.configure(state=NORMAL)
+            self.video_frame_status.configure(text="Frame 1")
+            try:
+                frame = video_support.extract_frame(fullFilename, 0)
+                self.image_orig = Image.open(BytesIO(frame)).convert("RGB")
+            except video_support.VideoError as error:
+                showerror("Video preview failed", str(error))
+                self.image_orig = Image.new("RGB", (640, 360), color=(70, 70, 70))
+                self.video_frame_available = False
+                self.video_frame_button.configure(state=DISABLED)
+                self.video_frame_status.configure(text="Preview unavailable")
+        else:
+            self.video_frame_button.configure(state=DISABLED)
+            self.video_frame_status.configure(text="")
+            self.image_orig = Image.open(fullFilename)
+
+        self.crop_button.configure(
+            state=NORMAL if self.video_frame_available else DISABLED
+        )
+        self.resize_button.configure(
+            state=NORMAL if self.video_frame_available else DISABLED
+        )
         self.image_size = box.Size2D(self.image_orig.size[0], self.image_orig.size[1])
         logger.info(
-            "Image is " + str(self.image_size[0]) + "x" + str(self.image_size[1])
+            "Media is " + str(self.image_size[0]) + "x" + str(self.image_size[1])
         )
 
-        # Initialize scroll cropping
+        # Initialize the selection for each new image or video.
         image_box = box.Box2D.scale_down(self.image_size, self.image_area)
-        self.scroll_crop_width = self.image_size[0] // 2
+        self.scroll_crop_width = max(1, int(self.image_size[0] // 2))
         self.inc_scroll_crop()
         self.mouse_position = (self.image_area / 2).astype(int)
-        self.mouse_selection = self.displayed_crop_box() + image_box
+        if self.selection_mode.get() == "click-drag":
+            self.mouse_selection = box.Box2D(
+                image_box.offset + image_box.size / 4,
+                image_box.size / 2,
+            )
+        else:
+            self.mouse_selection = self.displayed_crop_box() + image_box
 
         self.update_image_display()
         self.update_selection_box(self.image_label)
@@ -458,7 +639,8 @@ class App(ThemedTk):
         self.focus()
 
     def on_resize(self, event):
-        new_display_area = box.Size2D(self.winfo_width(), self.winfo_height())
+        content_height = max(1, self.winfo_height() - self.controls.winfo_height())
+        new_display_area = box.Size2D(self.winfo_width(), content_height)
         if np.array_equal(self.display_area, new_display_area):
             return
 
@@ -508,6 +690,9 @@ class App(ThemedTk):
         self.configfile["selection"]["fixed_aspect"] = make_bool(
             self.fixed_aspect.get() != 0
         )
+        divisible_by = self.divisible_by_var.get().strip()
+        if not divisible_by or (divisible_by.isdigit() and int(divisible_by) > 0):
+            self.configfile["selection"]["divisible_by"] = divisible_by
         self.configfile["selection"]["show_guides"] = make_bool(
             self.show_guides.get() != 0
         )
