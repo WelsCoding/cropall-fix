@@ -78,9 +78,21 @@ Then run the included helper script from the project directory:
 ```
 
 The script creates `.venv`, installs `requirements.txt` on its first run,
-activates the environment, and starts `cropall.py`. If `.venv` already exists,
-it skips installation and starts the app using that environment. To pass an
-input directory, for example:
+activates the environment, and starts `cropall.py`. If [`uv`](https://docs.astral.sh/uv/)
+is available it is used for that (`uv venv` + `uv pip install`, which is much
+faster); otherwise the script falls back to the stdlib `venv` module and
+`pip`. Either way the environment is built with Python 3.12. The uv path
+prefers a *system* Python 3.12 — its Tk is linked against the host X11
+libraries, unlike some uv-managed ("standalone") CPython builds whose Tk
+aborts on Linux with libxcb's `Unknown sequence number while appending
+request` assertion — and only downloads a uv-managed Python 3.12 if no system
+one exists. Set `PYTHON_BIN`, e.g. `PYTHON_BIN=/usr/bin/python3.12
+./run_cropall.sh`, to force a specific interpreter.
+
+If `.venv` already exists, it is used as-is and installation is skipped, so
+delete it (`rm -rf .venv`) and re-run the script to rebuild it — for example
+to switch the interpreter it was created from. To pass an input directory,
+for example:
 
 ```bash
 ./run_cropall.sh /path/to/photos-and-videos

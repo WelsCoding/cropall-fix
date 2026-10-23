@@ -83,6 +83,39 @@ def getImages(config, dir):
     return images
 
 
+def ask_input_folder(initialdir):
+    """Ask for the input directory with a short-lived Tk root.
+
+    Calling ``tkinter.filedialog.askdirectory`` without a parent makes
+    tkinter implicitly create a hidden default root window, and that
+    interpreter (with its X display connection) stays alive. The main
+    window (``gui.App``, a ``ThemedTk``) later creates a second Tk
+    interpreter in the same process. Having two live Tk interpreters is
+    not supported, and on Linux/X11 (including XWayland) it can abort in
+    libxcb at start-up with::
+
+        [xcb] Unknown sequence number while appending request
+        [xcb] You called XInitThreads, this is not your fault
+        [xcb] Aborting, sorry about that.
+        python: ../../src/xcb_io.c:157: append_pending_request:
+            Assertion `!xcb_xlib_unknown_seq_number' failed.
+
+    Using an explicit root as the dialog's parent and destroying it before
+    the main window is created means the two interpreters never coexist.
+    """
+    import tkinter
+    import tkinter.filedialog
+
+    root = tkinter.Tk()
+    root.withdraw()
+    try:
+        return tkinter.filedialog.askdirectory(
+            parent=root, initialdir=initialdir, title="Please select a directory"
+        )
+    finally:
+        root.destroy()
+
+
 if __name__ == "__main__":
     cropall_config = config["cropall"]
     cropall_config["first_run"] = "False"
@@ -91,11 +124,7 @@ if __name__ == "__main__":
         input_folder = str(args.input_folder)
     else:
         # Ask for the input directory
-        import tkinter.filedialog
-
-        input_folder = tkinter.filedialog.askdirectory(
-            initialdir=cropall_config["input_folder"], title="Please select a directory"
-        )
+        input_folder = ask_input_folder(cropall_config["input_folder"])
     if not len(input_folder):
         raise ValueError("No directory selected. Exiting.")
     input_folder = pathlib.Path(os.path.normpath(input_folder))
