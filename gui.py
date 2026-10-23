@@ -35,6 +35,7 @@ from io import BytesIO
 import box
 import numpy as np
 from crop_geometry import normalize_crop_coords
+from output_naming import has_numbered_output, next_numbered_output_path
 import video_support
 from tkinter import *
 from tkinter.ttk import *
@@ -83,10 +84,14 @@ class App(ThemedTk):
             + "not wasted on navigating clunky GUI hierarchies.\n\n"
             + "Controls:\n"
             + "  <space>        - crop and advance to next media file\n"
+            + "                   (with Multi-crop: crop and stay on this file)\n"
             + "  <left>/<right> - previous/next media file\n"
             + "  scroll mouse   - adjust crop size when using scroll mode\n"
             + "  +10 frames     - preview a later video frame\n"
             + "  Lock ratio     - constrain the selection to the chosen ratio\n"
+            + "  Multi-crop     - save numbered crops (name_1, name_2, ...) of\n"
+            + "                   one file; press Next when you are done\n"
+            + "  Crop: W x H    - pixel size of the current crop selection\n"
         )
 
         self.grid_rowconfigure(0, weight=1)
@@ -103,6 +108,11 @@ class App(ThemedTk):
         self.displayed_crop_rectangle = None
         self.verti_aux_item = None
         self.horiz_aux_item = None
+
+        # Created with the control bar below; kept as attributes here so
+        # update helpers can run before/without them.
+        self.crop_size_label = None
+        self.crop_status = None
 
         # "click-drag" selection rectangle
         self.mouse_position = box.Size2D(0, 0)
@@ -131,6 +141,12 @@ class App(ThemedTk):
         self.fixed_aspect = IntVar()
         self.fixed_aspect.set(
             1 if self.configfile.getboolean("selection", "fixed_aspect") else 0
+        )
+        self.multi_crop = IntVar()
+        self.multi_crop.set(
+            1
+            if self.configfile.getboolean("cropper", "multi_crop", fallback=False)
+            else 0
         )
 
         self.controls = Frame(self)
@@ -212,6 +228,19 @@ class App(ThemedTk):
         self.crop_button = Button(self.controls, text="Crop", command=self.crop_next)
         self.crop_button.grid(row=1, column=9, sticky="nsew", padx=2, pady=2)
 
+        self.multi_crop_check = Checkbutton(
+            self.controls, text="Multi-crop", variable=self.multi_crop
+        )
+        self.multi_crop_check.grid(row=1, column=10, sticky="w", padx=(10, 2), pady=2)
+        # Size of the current selection in source-image pixels. Shown
+        # whether or not Multi-crop is active.
+        self.crop_size_label = Label(self.controls, text="Crop: —")
+        self.crop_size_label.grid(row=1, column=11, sticky="w", padx=(8, 2), pady=2)
+        # In Multi-crop mode the view does not change after a crop, so
+        # confirm what was just written.
+        self.crop_status = Label(self.controls, text="")
+        self.crop_status.grid(row=1, column=12, sticky="w", padx=(8, 2), pady=2)
+
         self.menubar = Menu(self)
         self.options_menu = Menu(self.menubar)
         self.perfect_pixel_ratio = IntVar()
@@ -264,6 +293,7 @@ class App(ThemedTk):
         self.resize_vars[1].trace("w", self.on_option_changed)
         self.divisible_by_var.trace("w", self.on_option_changed)
         self.perfect_pixel_ratio.trace("w", self.on_option_changed)
+        self.multi_crop.trace("w", self.on_option_changed)
         self.fixed_aspect.trace("w", self.on_fixed_aspect_changed)
         self.show_guides.trace("w", self.on_option_changed)
         self.resize_after_crop.trace("w", self.on_option_changed)
@@ -289,8 +319,8 @@ class App(ThemedTk):
 
         logger.warning("Checking for existing crops")
         self.current = 0
-        while self.current < len(self.images) and os.path.exists(
-            os.path.join(self.output_folder, self.images[self.current])
+        while self.current < len(self.images) and self.already_cropped(
+            self.images[self.current]
         ):
             logger.warning(
                 "Skipping " + self.images[self.current] + ". Already cropped."
@@ -304,6 +334,19 @@ class App(ThemedTk):
         # Load the first image
         self.current += 1
         self.previous()
+
+    def already_cropped(self, filename):
+        """True if an output already exists for ``filename``.
+
+        A plain (un-numbered) output always counts. Numbered multi-crop
+        outputs only count while Multi-crop is active, so the start-up
+        "skip already cropped files" behaviour is unchanged otherwise.
+        """
+        if os.path.exists(os.path.join(self.output_folder, filename)):
+            return True
+        return bool(
+            self.multi_crop.get() and has_numbered_output(self.output_folder, filename)
+        )
 
     def validate_divisor_input(self, value):
         return value == "" or value.isdigit()
@@ -407,12 +450,25 @@ class App(ThemedTk):
             box.Size2D(coords[2], coords[3]),
         )
 
-    def displayed_crop_box(self):
+    def displayed_crop_box(self, crop_box=None):
         "Return a crop box in display coordinates, relative to the image area."
         image_box = box.Box2D.scale_down(self.image_size, self.image_area)
-        orig_crop = self.image_crop_box()
+        orig_crop = crop_box if crop_box is not None else self.image_crop_box()
         display_crop = orig_crop.scaled(self.image_size, image_box.size)
         return display_crop
+
+    def update_crop_dimensions(self, crop_box=None):
+        """Show the size of the selected crop area in source pixels.
+
+        This is the size of the region that Crop will cut out (before any
+        optional resize-down), and is shown regardless of Multi-crop.
+        """
+        if self.crop_size_label is None:
+            return
+        if crop_box is None:
+            crop_box = self.image_crop_box()
+        width, height = (int(value) for value in crop_box.size)
+        self.crop_size_label.configure(text=f"Crop: {width} × {height} px")
 
     def previous(self, event=None):
         self.current -= 1
@@ -445,13 +501,29 @@ class App(ThemedTk):
         except ValueError as error:
             showerror("Invalid crop settings", str(error))
             return
+        multi_crop = bool(self.multi_crop.get())
+        if multi_crop:
+            # Numbered output (name_1, name_2, ...) so repeated crops of
+            # this file never overwrite each other (or a plain crop made
+            # with Multi-crop off).
+            output_path = next_numbered_output_path(
+                self.output_folder, self.currentName
+            )
+        else:
+            output_path = self.output_folder / self.currentName
         if self.cropper.crop(
             self.input_folder / self.currentName,
-            self.output_folder / self.currentName,
+            output_path,
             crop_box.coords().tolist(),
             source_size=tuple(int(value) for value in self.image_size),
         ):
-            self.next()
+            if multi_crop:
+                # Stay on this file so the user can crop it again; only
+                # the Next button (or its keyboard shortcuts) moves on.
+                if self.crop_status is not None:
+                    self.crop_status.configure(text=f"Saved {output_path.name}")
+            else:
+                self.next()
 
     def advance_video_frame(self):
         if not self.current_is_video or not self.video_frame_available:
@@ -487,6 +559,8 @@ class App(ThemedTk):
 
     def load_imgfile(self, filename):
         self.currentName = filename
+        if self.crop_status is not None:
+            self.crop_status.configure(text="")
         fullFilename = os.path.join(self.input_folder, filename)
         logger.info("Loading " + fullFilename)
         self.current_is_video = self.cropper.is_video_file(filename)
@@ -574,7 +648,9 @@ class App(ThemedTk):
             return
 
         image_box = box.Box2D.scale_down(self.image_size, self.image_area)
-        selection_box = self.displayed_crop_box() + image_box
+        crop_box = self.image_crop_box()
+        self.update_crop_dimensions(crop_box)
+        selection_box = self.displayed_crop_box(crop_box) + image_box
         if self.displayed_crop_rectangle is None:
             self.displayed_crop_rectangle = widget.create_rectangle(
                 selection_box.coords().tolist(),
@@ -702,6 +778,7 @@ class App(ThemedTk):
         self.configfile["cropper"]["confirm_overwrite"] = make_bool(
             self.confirm_overwrite.get() != 0
         )
+        self.configfile["cropper"]["multi_crop"] = make_bool(self.multi_crop.get() != 0)
         self.configfile["selection"]["mode"] = self.selection_mode.get()
 
     def inc_scroll_crop(self):

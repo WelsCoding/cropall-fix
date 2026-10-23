@@ -23,7 +23,8 @@ frame previews and crop/resize output. The GUI uses quick, low-quality previews.
 Select the source directory to process. By default results are written to a
 `crops` subdirectory.
 
-- space - crop and advance to the next image
+- space - crop and advance to the next image (with **Multi-crop** selected:
+  crop and stay on the current image)
 - left/right - previous/next image
 - click - move the selection, or drag to box-select depending on the mode (hold
   shift to move the box-select)
@@ -34,6 +35,16 @@ Select the source directory to process. By default results are written to a
   click-drag mode automatically.
 - Enter a positive integer in **Divisible by** to make both crop dimensions a
   multiple of that value. Leave it blank to disable the constraint.
+- The control bar shows the size of the currently selected crop area as
+  `Crop: <width> × <height> px`, in source-image pixels (before any optional
+  resize-down). It updates while you drag, scroll, or change crop options.
+- Select **Multi-crop** to create several crops from one image (or video).
+  While it is selected, **Crop**/space does not advance to the next file —
+  press **Next** when you are done with it. Each crop is saved with an
+  incremented number, e.g. `photo_1.jpg`, `photo_2.jpg`, … (numbering
+  continues past files already in the output directory), so the crops never
+  overwrite each other. With **Multi-crop** unselected, a crop is saved under
+  the original file name and the app advances to the next file, as before.
 - Videos open on their first frame. **+10 frames** advances the preview by ten
   frames; Crop applies the selected rectangle to the whole video.
 
