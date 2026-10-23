@@ -23,7 +23,8 @@ frame previews and crop/resize output. The GUI uses quick, low-quality previews.
 Select the source directory to process. By default results are written to a
 `crops` subdirectory.
 
-- space - crop and advance to the next image
+- space - crop and advance to the next image (with **Multi-crop** selected:
+  crop and stay on the current image)
 - left/right - previous/next image
 - click - move the selection, or drag to box-select depending on the mode (hold
   shift to move the box-select)
@@ -34,6 +35,16 @@ Select the source directory to process. By default results are written to a
   click-drag mode automatically.
 - Enter a positive integer in **Divisible by** to make both crop dimensions a
   multiple of that value. Leave it blank to disable the constraint.
+- The control bar shows the size of the currently selected crop area as
+  `Crop: <width> × <height> px`, in source-image pixels (before any optional
+  resize-down). It updates while you drag, scroll, or change crop options.
+- Select **Multi-crop** to create several crops from one image (or video).
+  While it is selected, **Crop**/space does not advance to the next file —
+  press **Next** when you are done with it. Each crop is saved with an
+  incremented number, e.g. `photo_1.jpg`, `photo_2.jpg`, … (numbering
+  continues past files already in the output directory), so the crops never
+  overwrite each other. With **Multi-crop** unselected, a crop is saved under
+  the original file name and the app advances to the next file, as before.
 - Videos open on their first frame. **+10 frames** advances the preview by ten
   frames; Crop applies the selected rectangle to the whole video.
 
@@ -67,9 +78,21 @@ Then run the included helper script from the project directory:
 ```
 
 The script creates `.venv`, installs `requirements.txt` on its first run,
-activates the environment, and starts `cropall.py`. If `.venv` already exists,
-it skips installation and starts the app using that environment. To pass an
-input directory, for example:
+activates the environment, and starts `cropall.py`. If [`uv`](https://docs.astral.sh/uv/)
+is available it is used for that (`uv venv` + `uv pip install`, which is much
+faster); otherwise the script falls back to the stdlib `venv` module and
+`pip`. Either way the environment is built with Python 3.12. The uv path
+prefers a *system* Python 3.12 — its Tk is linked against the host X11
+libraries, unlike some uv-managed ("standalone") CPython builds whose Tk
+aborts on Linux with libxcb's `Unknown sequence number while appending
+request` assertion — and only downloads a uv-managed Python 3.12 if no system
+one exists. Set `PYTHON_BIN`, e.g. `PYTHON_BIN=/usr/bin/python3.12
+./run_cropall.sh`, to force a specific interpreter.
+
+If `.venv` already exists, it is used as-is and installation is skipped, so
+delete it (`rm -rf .venv`) and re-run the script to rebuild it — for example
+to switch the interpreter it was created from. To pass an input directory,
+for example:
 
 ```bash
 ./run_cropall.sh /path/to/photos-and-videos
